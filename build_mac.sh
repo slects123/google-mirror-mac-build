@@ -19,8 +19,13 @@ fi
 "$PYTHON_BIN" --version
 
 echo "=== 2. 安装依赖 ==="
-"$PYTHON_BIN" -m pip install --upgrade pip -q
-"$PYTHON_BIN" -m pip install pyqt6 pyinstaller -q
+VENV="$ROOT/.venv_mac"
+"$PYTHON_BIN" -m venv "$VENV"
+# shellcheck disable=SC1091
+source "$VENV/bin/activate"
+python -m pip install --upgrade pip -q
+python -m pip install pyqt6 pyinstaller -q
+PYTHON_BIN="$VENV/bin/python"
 
 echo "=== 3. 下载 macOS 版 adb/scrcpy ==="
 if [ ! -f "$ROOT/adb" ] || [ ! -f "$ROOT/scrcpy" ]; then
@@ -55,10 +60,9 @@ if [ ! -d "$ROOT/Software" ]; then
     exit 1
 fi
 
-echo "=== 4. 生成授权数据 ==="
-"$PYTHON_BIN" "$ROOT/generate_licenses.py"
+echo "=== 4. 检查授权数据 ==="
 if [ ! -f "$ROOT/licenses_data.py" ]; then
-    echo "licenses_data.py 生成失败"
+    echo "licenses_data.py 缺失"
     exit 1
 fi
 
