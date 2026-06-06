@@ -20,7 +20,7 @@ VENV="$ROOT/.venv_mac"
 python3 -m venv "$VENV"
 source "$VENV/bin/activate"
 python -m pip install --upgrade pip -q
-python -m pip install pyqt6 pyinstaller -q
+python -m pip install pyqt6 pyinstaller pillow -q
 PY="$VENV/bin/python"
 
 echo "=== 2. adb/scrcpy ==="
