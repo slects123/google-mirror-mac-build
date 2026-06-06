@@ -1,0 +1,37 @@
+# 在 GitHub 云端 Mac 上自动打包 DMG（无需自有苹果电脑）
+# 用法：把项目推到 GitHub 后，在 Actions 页手动 Run workflow，下载产物即可
+name: Build macOS DMG
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-dmg:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build DMG
+        run: |
+          chmod +x build_mac.sh
+          ./build_mac.sh
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: 谷歌投屏-dmg
+          path: 谷歌投屏.dmg
+          retention-days: 30
+
+      - name: Publish DMG to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dmg-latest
+          name: 谷歌投屏 macOS
+          files: 谷歌投屏.dmg
+          overwrite_files: true
