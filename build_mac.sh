@@ -6,8 +6,13 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
 APP_NAME="谷歌投屏"
-SCRCPY_VER="v2.7"
-SCRCPY_URL="https://github.com/Genymobile/scrcpy/releases/download/${SCRCPY_VER}/scrcpy-macos-${SCRCPY_VER}.zip"
+SCRCPY_VER="v4.0"
+ARCH="$(uname -m)"
+if [ "$ARCH" = "arm64" ]; then
+    SCRCPY_URL="https://github.com/Genymobile/scrcpy/releases/download/${SCRCPY_VER}/scrcpy-macos-aarch64-${SCRCPY_VER}.tar.gz"
+else
+    SCRCPY_URL="https://github.com/Genymobile/scrcpy/releases/download/${SCRCPY_VER}/scrcpy-macos-x86_64-${SCRCPY_VER}.tar.gz"
+fi
 
 echo "=== 1. Python ==="
 python3 --version
@@ -20,10 +25,10 @@ PY="$VENV/bin/python"
 
 echo "=== 2. adb/scrcpy ==="
 if [ ! -f "$ROOT/adb" ] || [ ! -f "$ROOT/scrcpy" ]; then
-    mkdir -p "$ROOT/runtime"
-    curl -fsSL "$SCRCPY_URL" -o "$ROOT/runtime/scrcpy-macos.zip"
-    unzip -q "$ROOT/runtime/scrcpy-macos.zip" -d "$ROOT/runtime/scrcpy_mac_tmp"
-    find "$ROOT/runtime/scrcpy_mac_tmp" -type f \( -name adb -o -name scrcpy -o -name scrcpy-server -o -name '*.dylib' \) -exec cp {} "$ROOT/" \;
+    mkdir -p "$ROOT/runtime/scrcpy_dl"
+    curl -fsSL "$SCRCPY_URL" -o "$ROOT/runtime/scrcpy.tar.gz"
+    tar -xzf "$ROOT/runtime/scrcpy.tar.gz" -C "$ROOT/runtime/scrcpy_dl"
+    find "$ROOT/runtime/scrcpy_dl" -type f \( -name adb -o -name scrcpy -o -name scrcpy-server -o -name '*.dylib' \) -exec cp {} "$ROOT/" \;
     chmod +x "$ROOT/adb" "$ROOT/scrcpy" 2>/dev/null || true
 fi
 for f in adb scrcpy scrcpy-server; do
