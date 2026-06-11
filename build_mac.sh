@@ -37,7 +37,13 @@ done
 
 echo "=== 3. Software ==="
 if [ ! -d "$ROOT/Software" ]; then
-    curl -fsSL "${SOFTWARE_ZIP_URL:-http://154.8.236.49/download/software.zip}" -o "$ROOT/runtime/software.zip"
+    mkdir -p "$ROOT/runtime"
+    SOFTWARE_URL="${SOFTWARE_ZIP_URL:-https://github.com/slects123/google-mirror-mac-build/releases/download/build-assets/software.zip}"
+    if ! curl -fL --retry 5 --retry-delay 3 --connect-timeout 30 --max-time 900 \
+        -o "$ROOT/runtime/software.zip" "$SOFTWARE_URL"; then
+        curl -fL --retry 3 --connect-timeout 30 --max-time 900 \
+            -o "$ROOT/runtime/software.zip" "http://154.8.236.49/downloads/software.zip"
+    fi
     unzip -q "$ROOT/runtime/software.zip" -d "$ROOT"
 fi
 [ -d "$ROOT/Software" ] || { echo "Software missing"; exit 1; }
