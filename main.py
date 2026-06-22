@@ -21,10 +21,10 @@ if IS_WIN:
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QCheckBox, QListWidget, QLineEdit, QTextEdit,
-    QLabel, QMessageBox, QInputDialog, QStackedWidget,
+    QLabel, QMessageBox, QInputDialog, QStackedWidget, QSplitter,
     QListWidgetItem, QFrame, QSizePolicy, QDialog, QScrollArea
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QEvent, QPoint
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QEvent, QPoint, QSettings
 from PyQt6.QtGui import QTextCursor, QPalette, QColor, QIcon, QKeyEvent
 
 try:
@@ -108,6 +108,8 @@ GOOGLE_SERVICE_APK = ROOT / "Software" / "3.apk"
 GOOGLE_STORE_APK = ROOT / "Software" / "4.apk"
 FLCLASH_APK = ROOT / "Software" / "flclash.apk"
 FLCLASH_PACKAGE = "com.follow.clash"
+HUAWEI_BACKUP_APK = ROOT / "Software" / "oldBackup.apk"
+HUAWEI_BACKUP_PACKAGE = "com.huawei.localBackup"
 _FLCLASH_SUB_URL_DATA = (
     "aHR0cHM6Ly9kYXNoLnBxamMuc2l0ZS9hcGkvdjEvcHEvZGM0NGJmNDg2YTA2YTI3"
     "NTNjNmIzYmE3ODE0NTM1OWM="
@@ -158,6 +160,13 @@ MIRROR_PANEL_FIXED_W = MIRROR_PHONE_FRAME_W + 24
 MIRROR_PANEL_FIXED_H = MIRROR_PHONE_FRAME_H + 110
 APP_WINDOW_W = SIDE_PANEL_W + MIRROR_PANEL_FIXED_W + 38
 APP_WINDOW_H = MIRROR_PANEL_FIXED_H + 66
+MIRROR_PANEL_MIN_W = max(260, MIRROR_PANEL_FIXED_W - 80)
+MIRROR_PANEL_MIN_H = max(420, MIRROR_PANEL_FIXED_H - 120)
+MIRROR_VIEWPORT_INSET = 4
+SETTINGS_ORG = "GoogleMirror"
+SETTINGS_APP = "CastApp"
+SCRCPY_VIDEO_BIT_RATE = "20M"
+SCRCPY_MAX_ENCODE_SIZE = 2560
 MIRROR_FIXED = {
     "conn_btn": (164, 54),
     "device_list": (336, 72),
@@ -209,6 +218,8 @@ class LogSignal(QObject):
     flclash_install_done = pyqtSignal(bool, str)
     flclash_subscribe_done = pyqtSignal(bool, str)
     flclash_uninstall_done = pyqtSignal(bool, str)
+    huawei_backup_install_done = pyqtSignal(bool, str)
+    huawei_backup_uninstall_done = pyqtSignal(bool, str)
 
 # 2019-01-01 00:00:00 (北京时间)
 TARGET_DATE_MS = "1546272000000"
@@ -342,6 +353,11 @@ class MirrorWindow(QMainWindow):
         self.mirror_page = None
         self._mirror_scale_items = []
         self._mirror_scale_fonts = None
+        self._last_screen = None
+        self._layout_refresh_timer = QTimer()
+        self._layout_refresh_timer.setSingleShot(True)
+        self._layout_refresh_timer.setInterval(60)
+        self._layout_refresh_timer.timeout.connect(self._refresh_layout_now)
 
         self.log_signal = LogSignal()
         self._connect_log_signals()
@@ -377,6 +393,8 @@ class MirrorWindow(QMainWindow):
             (self.log_signal.flclash_install_done, "_on_flclash_install_done"),
             (self.log_signal.flclash_subscribe_done, "_on_flclash_subscribe_done"),
             (self.log_signal.flclash_uninstall_done, "_on_flclash_uninstall_done"),
+            (self.log_signal.huawei_backup_install_done, "_on_huawei_backup_install_done"),
+            (self.log_signal.huawei_backup_uninstall_done, "_on_huawei_backup_uninstall_done"),
         )
         for signal, method_name in bindings:
             if not hasattr(self, method_name):
@@ -419,6 +437,12 @@ class MirrorWindow(QMainWindow):
             QFrame#MirrorPanel {
                 background: rgba(255, 255, 255, 0.92);
                 border: 2px solid #ffffff; border-radius: 18px;
+            }
+            QSplitter::handle:horizontal {
+                background: #F3E3EF; width: 6px; margin: 8px 0; border-radius: 3px;
+            }
+            QSplitter::handle:horizontal:hover {
+                background: #FF8FB1;
             }
             QWidget#MirrorViewport {
                 background: qlineargradient(
@@ -705,11 +729,13 @@ class MirrorWindow(QMainWindow):
         if not self.mirror_page:
             return
         margin = 16
+        ref_w = max(self.page_stack.width(), self.mirror_page.width(), MIRROR_PAGE_BASE_W)
+        ref_h = max(self.page_stack.height(), 240)
         scale = min(
-            (self.mirror_page.width() - margin) / MIRROR_PAGE_BASE_W,
-            (self.mirror_page.height() - margin) / MIRROR_PAGE_BASE_H,
+            (ref_w - margin) / MIRROR_PAGE_BASE_W,
+            (ref_h - margin) / MIRROR_PAGE_BASE_H,
         )
-        scale = max(0.85, min(scale, 1.2))
+        scale = max(0.68, min(scale, 1.55))
         for item in self._mirror_scale_items:
             widget = item["widget"]
             widget.setFixedSize(int(item["w"] * scale), int(item["h"] * scale))
@@ -786,13 +812,13 @@ class MirrorWindow(QMainWindow):
         layout.setContentsMargins(14, 14, 14, 10)
         layout.setSpacing(10)
 
-        body_row = QHBoxLayout()
-        body_row.setSpacing(10)
-        body_row.setContentsMargins(0, 0, 0, 0)
-
         side_panel = QFrame()
         side_panel.setObjectName("SidePanel")
-        side_panel.setFixedSize(SIDE_PANEL_W, MIRROR_PANEL_FIXED_H)
+        side_panel.setMinimumWidth(SIDE_PANEL_W - 24)
+        side_panel.setMaximumWidth(int(SIDE_PANEL_W * 1.35))
+        side_panel.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding
+        )
         side_layout = QHBoxLayout(side_panel)
         side_layout.setContentsMargins(6, 6, 6, 6)
         side_layout.setSpacing(6)
@@ -836,11 +862,14 @@ class MirrorWindow(QMainWindow):
         self.page_stack.addWidget(self._build_other_services_page())
         content_card_layout.addWidget(self.page_stack)
         side_layout.addWidget(content_card, 1)
-        body_row.addWidget(side_panel)
 
         self.mirror_container = QFrame()
         self.mirror_container.setObjectName("MirrorPanel")
-        self.mirror_container.setFixedSize(MIRROR_PANEL_FIXED_W, MIRROR_PANEL_FIXED_H)
+        self.mirror_container.setMinimumWidth(MIRROR_PANEL_MIN_W)
+        self.mirror_container.setMinimumHeight(MIRROR_PANEL_MIN_H)
+        self.mirror_container.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         self.mirror_layout = QVBoxLayout(self.mirror_container)
         self.mirror_layout.setContentsMargins(12, 12, 12, 10)
         self.mirror_layout.setSpacing(8)
@@ -860,7 +889,10 @@ class MirrorWindow(QMainWindow):
 
         self.mirror_viewport = QWidget()
         self.mirror_viewport.setObjectName("MirrorViewport")
-        self.mirror_viewport.setFixedSize(MIRROR_PHONE_FRAME_W, MIRROR_PHONE_FRAME_H)
+        self.mirror_viewport.setMinimumSize(220, 360)
+        self.mirror_viewport.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         viewport_lay = QVBoxLayout(self.mirror_viewport)
         viewport_lay.setContentsMargins(0, 0, 0, 0)
         viewport_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -896,7 +928,7 @@ class MirrorWindow(QMainWindow):
         self.mirror_stack.addWidget(self.mirror_embed_holder)
         phone_lay.addWidget(self.mirror_stack, 0, Qt.AlignmentFlag.AlignCenter)
         viewport_lay.addWidget(self.mirror_phone_frame, 0, Qt.AlignmentFlag.AlignCenter)
-        self.mirror_layout.addWidget(self.mirror_viewport, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.mirror_layout.addWidget(self.mirror_viewport, 1)
 
         self.mirror_kb_input = QLineEdit()
         self.mirror_kb_input.setPlaceholderText("在此输入文字（实时同步到手机）")
@@ -911,11 +943,19 @@ class MirrorWindow(QMainWindow):
         self.mirror_footer.setFixedHeight(20)
         self.mirror_layout.addWidget(self.mirror_footer)
 
-        body_row.addWidget(self.mirror_container)
-        layout.addLayout(body_row)
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.setHandleWidth(6)
+        self.splitter.addWidget(side_panel)
+        self.splitter.addWidget(self.mirror_container)
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setCollapsible(0, False)
+        self.splitter.setCollapsible(1, False)
+        self.splitter.splitterMoved.connect(self._on_splitter_moved)
+        layout.addWidget(self.splitter, 1)
         self.statusBar().showMessage("谷歌框架远程操作 · 精简投屏")
-        self._lock_window_size()
-        QTimer.singleShot(0, self._apply_mirror_viewport_size_fixed)
+        self._apply_responsive_window_size()
+        QTimer.singleShot(0, self._apply_mirror_viewport_size)
 
         for w in (
             self.mirror_container, self.mirror_viewport, self.mirror_phone_frame,
@@ -976,6 +1016,12 @@ class MirrorWindow(QMainWindow):
         if obj in (self.page_stack, self.nav_list) and event.type() == QEvent.Type.MouseButtonPress:
             self._disarm_mirror_keyboard()
 
+        if event.type() == QEvent.Type.Resize and obj in (
+            self.mirror_container, self.mirror_viewport, self.mirror_phone_frame,
+            self.mirror_embed_holder, self.mirror_stack,
+        ):
+            self._schedule_layout_refresh()
+
         if self.mirroring and obj in self._mirror_input_targets():
             et = event.type()
             if et == QEvent.Type.MouseButtonPress:
@@ -992,26 +1038,169 @@ class MirrorWindow(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._scale_mirror_layout()
-        self._sync_scrcpy_overlay()
+        self._schedule_layout_refresh()
 
     def moveEvent(self, event):
         super().moveEvent(event)
+        screen = QApplication.screenAt(self.frameGeometry().center())
+        if screen and screen != getattr(self, "_last_screen", None):
+            self._last_screen = screen
+            self._schedule_layout_refresh()
         self._sync_scrcpy_overlay()
 
-    def _lock_window_size(self):
-        flags = self.windowFlags()
-        flags &= ~Qt.WindowType.WindowMaximizeButtonHint
-        flags |= Qt.WindowType.MSWindowsFixedSizeDialogHint
-        self.setWindowFlags(flags)
-        self.setFixedSize(APP_WINDOW_W, APP_WINDOW_H)
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._schedule_layout_refresh()
+
+    def closeEvent(self, event):
+        settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
+        settings.setValue("geometry", self.saveGeometry())
+        if hasattr(self, "splitter"):
+            settings.setValue("splitter", self.splitter.saveState())
+        super().closeEvent(event)
+
+    def _schedule_layout_refresh(self):
+        self._layout_refresh_timer.start()
+
+    def _refresh_layout_now(self):
+        self._scale_mirror_layout()
+        self._apply_mirror_viewport_size()
+        self._sync_scrcpy_overlay()
+
+    def _on_splitter_moved(self, _pos, _index):
+        self._schedule_layout_refresh()
+
+    def _screen_available_geometry(self):
+        screen = QApplication.screenAt(self.frameGeometry().center())
+        if not screen:
+            screen = QApplication.primaryScreen()
+        if not screen:
+            return None
+        return screen.availableGeometry()
+
+    def _screen_tier(self, avail):
+        w, h = avail.width(), avail.height()
+        if w < 1280 or h < 720:
+            return "small"
+        if w < 1920 or h < 1080:
+            return "medium"
+        return "large"
+
+    def _try_restore_window_geometry(self):
+        settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
+        geo = settings.value("geometry")
+        if geo is None:
+            return False
+        self.restoreGeometry(geo)
+        avail = self._screen_available_geometry()
+        if not avail or not avail.contains(self.frameGeometry().center()):
+            return False
+        split = settings.value("splitter")
+        if split is not None and hasattr(self, "splitter"):
+            self.splitter.restoreState(split)
+        return True
+
+    def _apply_splitter_sizes(self, total_w):
+        avail = self._screen_available_geometry()
+        tier = self._screen_tier(avail) if avail else "medium"
+        left_ratio = {"small": 0.36, "medium": 0.33, "large": 0.30}.get(tier, 0.32)
+        left_w = int(total_w * left_ratio)
+        left_w = max(SIDE_PANEL_W - 56, min(left_w, SIDE_PANEL_W + 24))
+        right_w = max(total_w - left_w - 28, MIRROR_PANEL_MIN_W)
+        self.splitter.setSizes([left_w, right_w])
+
+    def _apply_responsive_window_size(self):
+        if self._try_restore_window_geometry():
+            QTimer.singleShot(0, self._refresh_layout_now)
+            return
+
+        avail = self._screen_available_geometry()
+        if not avail:
+            self.resize(APP_WINDOW_W, APP_WINDOW_H)
+            self.setMinimumSize(640, 520)
+            return
+
+        tier = self._screen_tier(avail)
+        width_ratio, height_ratio = {
+            "small": (0.97, 0.97),
+            "medium": (0.92, 0.92),
+            "large": (0.84, 0.88),
+        }.get(tier, (0.90, 0.90))
+
+        min_w = min(760, max(540, int(avail.width() * 0.48)))
+        min_h = min(560, max(460, int(avail.height() * 0.55)))
+        self.setMinimumSize(min_w, min_h)
+
+        target_w = max(APP_WINDOW_W, int(avail.width() * width_ratio))
+        target_h = max(APP_WINDOW_H, int(avail.height() * height_ratio))
+        target_w = min(target_w, avail.width() - 12)
+        target_h = min(target_h, avail.height() - 12)
+
+        x = avail.x() + max(0, (avail.width() - target_w) // 2)
+        y = avail.y() + max(0, (avail.height() - target_h) // 2)
+        self.setGeometry(x, y, target_w, target_h)
+
+        if hasattr(self, "splitter"):
+            self._apply_splitter_sizes(target_w)
+        self._last_screen = QApplication.screenAt(self.frameGeometry().center())
+
+    def _mirror_viewport_inner_size(self):
+        vw = self.mirror_viewport.width()
+        vh = self.mirror_viewport.height()
+        if vw < 50 or vh < 50:
+            footer_h = self.mirror_kb_input.height() + self.mirror_footer.height() + 56
+            vw = max(self.mirror_container.width() - 24, MIRROR_PHONE_FRAME_W)
+            vh = max(self.mirror_container.height() - footer_h, MIRROR_PHONE_FRAME_H)
+        inset = MIRROR_VIEWPORT_INSET
+        return max(vw - inset * 2, 50), max(vh - inset * 2, 50)
+
+    def _update_mirror_hint_font(self, sw, sh):
+        px = max(10, min(17, int(min(sw, sh) * 0.026)))
+        self.mirror_hint.setStyleSheet(
+            f"font-size: {px}px; color: #A78BFA; line-height: 1.45;"
+        )
+
+    def _mirror_dpr(self):
+        screen = QApplication.screenAt(self.mirror_embed_holder.mapToGlobal(QPoint(0, 0)))
+        if not screen:
+            screen = QApplication.primaryScreen()
+        return screen.devicePixelRatio() if screen else 1.0
+
+    def _scrcpy_encode_max_size(self):
+        dw, dh = self.device_w, self.device_h
+        if dw <= 0 or dh <= 0:
+            dw, dh = 1080, 2400
+        return min(max(dw, dh), SCRCPY_MAX_ENCODE_SIZE)
+
+    def _scrcpy_physical_size(self, sw, sh):
+        dpr = self._mirror_dpr()
+        return (
+            max(1, int(round(sw * dpr))),
+            max(1, int(round(sh * dpr))),
+        )
 
     def _mirror_display_size(self):
-        return 0, 0, MIRROR_SCREEN_W, MIRROR_SCREEN_H
+        cw, ch = self._mirror_viewport_inner_size()
+        pad = MIRROR_PHONE_FRAME_PAD
+        inner_w = max(cw - pad, 50)
+        inner_h = max(ch - pad, 50)
+        _, _, sw, sh = calc_fit_rect(inner_w, inner_h, self.device_w, self.device_h)
+        frame_w = sw + pad
+        frame_h = sh + pad
+        return sw, sh, frame_w, frame_h
 
     def _mirror_screen_global_rect(self):
+        sw, sh, _, _ = self._mirror_display_size()
+        pw, ph = self._scrcpy_physical_size(sw, sh)
         origin = self.mirror_embed_holder.mapToGlobal(QPoint(0, 0))
-        return origin.x(), origin.y(), MIRROR_SCREEN_W, MIRROR_SCREEN_H
+        dpr = self._mirror_dpr()
+        return (
+            int(round(origin.x() * dpr)),
+            int(round(origin.y() * dpr)),
+            pw,
+            ph,
+        )
 
     def _sync_scrcpy_overlay(self, force=False):
         if not self.mirroring or not self.scrcpy_hwnd:
@@ -1026,17 +1215,22 @@ class MirrorWindow(QMainWindow):
             _move_scrcpy_overlay(self.scrcpy_hwnd, x, y, w, h)
             self._last_overlay_rect = rect
 
-    def _apply_mirror_viewport_size_fixed(self):
-        w, h = MIRROR_SCREEN_W, MIRROR_SCREEN_H
-        if self._last_mirror_size != (w, h):
-            self._last_mirror_size = (w, h)
-            self.mirror_stack.setFixedSize(w, h)
-            self.mirror_phone_frame.setFixedSize(MIRROR_PHONE_FRAME_W, MIRROR_PHONE_FRAME_H)
-            self.mirror_hint.setFixedSize(w, h)
-        self._sync_scrcpy_overlay()
+    def _apply_mirror_viewport_size(self):
+        sw, sh, frame_w, frame_h = self._mirror_display_size()
+        new_size = (sw, sh, frame_w, frame_h)
+        if new_size == self._last_mirror_size:
+            self._sync_scrcpy_overlay()
+            return
+        self._last_mirror_size = new_size
+        self.mirror_phone_frame.setFixedSize(frame_w, frame_h)
+        self.mirror_stack.setFixedSize(sw, sh)
+        self.mirror_embed_holder.setFixedSize(sw, sh)
+        self.mirror_hint.setFixedSize(sw, sh)
+        self._update_mirror_hint_font(sw, sh)
+        self._sync_scrcpy_overlay(force=True)
 
     def _update_mirror_size(self):
-        self._apply_mirror_viewport_size_fixed()
+        self._apply_mirror_viewport_size()
 
     def _remove_embed_widget(self):
         self._disarm_mirror_keyboard()
@@ -1068,6 +1262,8 @@ class MirrorWindow(QMainWindow):
             self.log("投屏已结束")
             self.stop_mirror()
             return
+        if self.mirroring:
+            self._sync_scrcpy_overlay()
 
     def _try_embed_scrcpy(self):
         if not self.scrcpy_proc or self.scrcpy_proc.poll() is not None:
@@ -1103,6 +1299,7 @@ class MirrorWindow(QMainWindow):
             self._overlay_configured = False
             self._last_overlay_rect = None
             self._last_mirror_size = None
+            self._apply_mirror_viewport_size()
             self._sync_scrcpy_overlay(force=True)
             QTimer.singleShot(150, lambda: self._sync_scrcpy_overlay(force=True))
             self._disarm_mirror_keyboard()
@@ -1145,8 +1342,18 @@ class MirrorWindow(QMainWindow):
             btn.clicked.connect(fn)
             clash_lay.addWidget(btn)
         layout.addWidget(clash_card)
+
+        backup_card, backup_lay = self._section_frame()
+        backup_lay.addWidget(self._section_label("华为备份"))
+        btn_install_backup = self._action_button("安装华为备份", "primary")
+        btn_install_backup.clicked.connect(self.install_huawei_backup)
+        backup_lay.addWidget(btn_install_backup)
+        btn_uninstall_backup = self._action_button("卸载华为备份", "danger")
+        btn_uninstall_backup.clicked.connect(self.uninstall_huawei_backup)
+        backup_lay.addWidget(btn_uninstall_backup)
+        layout.addWidget(backup_card)
         layout.addStretch()
-        return self._wrap_scroll_page("其他服务", "GMS 卸载与 FlClash 相关操作", body)
+        return self._wrap_scroll_page("其他服务", "GMS 卸载、FlClash 与华为备份相关操作", body)
 
     def _build_install_tutorial_page(self):
         body = QWidget()
@@ -1924,6 +2131,21 @@ class MirrorWindow(QMainWindow):
         out = (r.stdout or "") + (r.stderr or "")
         return r.returncode == 0 and "package:" in out
 
+    def _adb_uninstall(self, serial, package):
+        result = subprocess.run(
+            [str(ADB), "-s", serial, "uninstall", package],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            encoding="utf-8",
+            errors="ignore",
+            cwd=str(ROOT),
+            **SUBPROCESS_FLAGS,
+        )
+        output = (result.stdout or "") + (result.stderr or "")
+        success = result.returncode == 0 and "Success" in output
+        return success, output.strip() or "卸载失败"
+
     def _uninstall_package(self, serial, package):
         for cmd in (
             ["pm", "uninstall", "--user", "0", package],
@@ -2019,6 +2241,85 @@ class MirrorWindow(QMainWindow):
                 "卸载flclash",
                 (detail + "\n\n") if detail else ""
                 + "卸载失败，请检查手机连接后重试。",
+            )
+
+    def install_huawei_backup(self):
+        if not self._ensure_serial():
+            return
+        if not HUAWEI_BACKUP_APK.exists():
+            QMessageBox.warning(self, "提示", f"未找到安装包：\n{HUAWEI_BACKUP_APK}")
+            return
+        self.log("正在安装华为备份...")
+        threading.Thread(
+            target=self._do_install_apk,
+            args=(HUAWEI_BACKUP_APK, "华为备份", "huawei_backup"),
+            daemon=True,
+        ).start()
+
+    def _on_huawei_backup_install_done(self, success, detail):
+        if success:
+            QMessageBox.information(
+                self,
+                "华为备份",
+                "华为备份已安装完成。\n\n请在手机桌面找到「备份」并打开使用。",
+            )
+        else:
+            QMessageBox.warning(
+                self,
+                "安装失败",
+                (detail + "\n\n") if detail else ""
+                + "请检查手机是否允许 USB 安装，\n"
+                "或在手机上手动安装 Software\\oldBackup.apk",
+            )
+
+    def uninstall_huawei_backup(self):
+        if not self._ensure_serial():
+            return
+        reply = QMessageBox.question(
+            self,
+            "卸载华为备份",
+            f"将卸载：{HUAWEI_BACKUP_PACKAGE}\n\n确定要继续吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self.log(f"正在卸载 {HUAWEI_BACKUP_PACKAGE}...")
+        threading.Thread(target=self._do_uninstall_huawei_backup, daemon=True).start()
+
+    def _do_uninstall_huawei_backup(self):
+        serial = self.current_serial
+        package = HUAWEI_BACKUP_PACKAGE
+        try:
+            if not self._is_package_installed(serial, package):
+                self.log(f"未安装 {package}，无需卸载")
+                self.log_signal.huawei_backup_uninstall_done.emit(
+                    True, f"未安装 {package}，无需卸载。",
+                )
+                return
+            ok, detail = self._adb_uninstall(serial, package)
+            if not ok:
+                ok, detail = self._uninstall_package(serial, package)
+            if ok:
+                self.log(f"已卸载 {package}")
+                self.log_signal.huawei_backup_uninstall_done.emit(
+                    True, f"{package} 已卸载。",
+                )
+            else:
+                self.log(f"卸载 {package} 失败: {detail}")
+                self.log_signal.huawei_backup_uninstall_done.emit(False, detail)
+        except Exception as e:
+            self.log(f"卸载 {package} 失败: {e}")
+            self.log_signal.huawei_backup_uninstall_done.emit(False, str(e))
+
+    def _on_huawei_backup_uninstall_done(self, success, detail):
+        if success:
+            QMessageBox.information(self, "卸载华为备份", detail or "卸载完成。")
+        else:
+            QMessageBox.warning(
+                self,
+                "卸载华为备份",
+                detail or "卸载失败，请检查手机连接后重试。",
             )
 
     def install_flclash(self):
@@ -2209,6 +2510,8 @@ class MirrorWindow(QMainWindow):
             self.log_signal.google_store_install_done.emit(success, detail)
         elif emit_tag == "flclash":
             self.log_signal.flclash_install_done.emit(success, detail)
+        elif emit_tag == "huawei_backup":
+            self.log_signal.huawei_backup_install_done.emit(success, detail)
         else:
             self.log_signal.google_framework_install_done.emit(success, detail, emit_tag)
 
@@ -2428,9 +2731,11 @@ class MirrorWindow(QMainWindow):
         self._update_mirror_size()
 
         if IS_MAC:
+            self.device_w, self.device_h = self._get_device_resolution()
             args = [
                 str(SCRCPY), "-s", self.current_serial,
-                "--max-fps", "60", "--video-bit-rate", "8M",
+                "--max-fps", "60", "--video-bit-rate", SCRCPY_VIDEO_BIT_RATE,
+                "--max-size", str(self._scrcpy_encode_max_size()),
                 "--stay-awake",
                 "--window-title", f"谷歌投屏 - {model or self.current_serial}",
             ]
@@ -2441,20 +2746,23 @@ class MirrorWindow(QMainWindow):
             embed_msg = "投屏已启动，请在独立窗口查看画面"
         else:
             self.device_w, self.device_h = self._get_device_resolution()
-            _, _, ww, wh = self._mirror_display_size()
+            sw, sh, _, _ = self._mirror_display_size()
+            pw, ph = self._scrcpy_physical_size(sw, sh)
+            encode_max = self._scrcpy_encode_max_size()
             args = [
                 str(SCRCPY), "-s", self.current_serial,
-                "--max-fps", "60", "--video-bit-rate", "8M",
+                "--max-fps", "60", "--video-bit-rate", SCRCPY_VIDEO_BIT_RATE,
                 "--window-title", f"scrcpy_embed_{self.current_serial}",
                 "--window-borderless",
-                "--max-size", str(max(ww, wh)),
-                "--window-width", str(ww),
-                "--window-height", str(wh),
+                "--max-size", str(encode_max),
+                "--window-width", str(pw),
+                "--window-height", str(ph),
                 "--window-x", "-32000",
                 "--window-y", "-32000",
                 "--stay-awake",
                 "--keyboard=sdk",
             ]
+            self.log(f"投屏编码: {encode_max}px · 码率 {SCRCPY_VIDEO_BIT_RATE}")
             self.mirror_hint.setText(f"正在连接...\n\n{model or self.current_serial}")
             embed_msg = "投屏已启动，正在嵌入画面..."
 
@@ -2507,14 +2815,13 @@ class MirrorWindow(QMainWindow):
         self._last_mirror_size = None
         self._mirror_kb_prev = ""
         self.mirror_kb_input.clear()
-        self._apply_mirror_viewport_size_fixed()
+        self._apply_mirror_viewport_size()
         self.statusBar().showMessage("谷歌框架远程操作 · 精简投屏")
         self.log("已停止投屏")
 
     def showEvent(self, event):
         super().showEvent(event)
-        QTimer.singleShot(100, self._scale_mirror_layout)
-        QTimer.singleShot(120, self._apply_mirror_viewport_size_fixed)
+        QTimer.singleShot(80, self._refresh_layout_now)
 
     def clear_log(self):
         self.log_box.clear()
@@ -2848,6 +3155,10 @@ def _app_icon():
 
 
 def main():
+    if hasattr(Qt, "HighDpiScaleFactorRoundingPolicy"):
+        QApplication.setHighDpiScaleFactorRoundingPolicy(
+            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+        )
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setWindowIcon(_app_icon())
